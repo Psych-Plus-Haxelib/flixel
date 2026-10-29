@@ -28,6 +28,8 @@ class FlxDrawTrianglesItem extends FlxDrawBaseItem<FlxDrawTrianglesItem>
 	var alphas:Array<Float>;
 	var colorMultipliers:Array<Float>;
 	var colorOffsets:Array<Float>;
+	var gpuMeta0:Array<Float>;
+	var gpuMeta1:Array<Float>;
 	#end
 
 	public var vertices:DrawData<Float> = new DrawData<Float>();
@@ -40,6 +42,7 @@ class FlxDrawTrianglesItem extends FlxDrawBaseItem<FlxDrawTrianglesItem>
 	public var colorsPosition:Int = 0;
 
 	var bounds:FlxRect = FlxRect.get();
+	var borrowedGeometry:Bool = false;
 
 	public function new()
 	{
@@ -60,19 +63,48 @@ class FlxDrawTrianglesItem extends FlxDrawBaseItem<FlxDrawTrianglesItem>
 
 		#if !flash
 		var shader = shader != null ? shader : graphics.shader;
-		shader.bitmap.input = graphics.bitmap;
-		shader.bitmap.filter = (camera.antialiasing || antialiasing) ? LINEAR : NEAREST;
-		shader.bitmap.wrap = REPEAT; // in order to prevent breaking tiling behaviour in classes that use drawTriangles
-		shader.alpha.value = alphas;
+		if (shader == null)
+			return;
+
+		// Macro-generated FlxShader subclasses expose these fields directly.
+		// FlxRuntimeShader keeps them in ShaderData instead, so the inherited
+		// generated field may be null even though the GLSL attribute exists.
+		// Resolve both representations to make runtime vertex shaders safe for
+		// drawTriangles batches.
+		var bitmapInput:Dynamic = shader.bitmap;
+		if (bitmapInput == null) bitmapInput = Reflect.field(shader.data, "bitmap");
+		if (bitmapInput == null) return;
+		bitmapInput.input = graphics.bitmap;
+		bitmapInput.filter = (camera.antialiasing || antialiasing)
+			? openfl.display3D.Context3DTextureFilter.LINEAR
+			: openfl.display3D.Context3DTextureFilter.NEAREST;
+		bitmapInput.wrap = openfl.display3D.Context3DWrapMode.REPEAT; // preserve drawTriangles tiling behaviour
+
+		var alphaParam:Dynamic = shader.alpha;
+		if (alphaParam == null) alphaParam = Reflect.field(shader.data, "alpha");
+		if (alphaParam != null) alphaParam.value = alphas;
 
 		if (colored || hasColorOffsets)
 		{
-			shader.colorMultiplier.value = colorMultipliers;
-			shader.colorOffset.value = colorOffsets;
+			var multiplierParam:Dynamic = shader.colorMultiplier;
+			if (multiplierParam == null) multiplierParam = Reflect.field(shader.data, "colorMultiplier");
+			if (multiplierParam != null) multiplierParam.value = colorMultipliers;
+			var offsetParam:Dynamic = shader.colorOffset;
+			if (offsetParam == null) offsetParam = Reflect.field(shader.data, "colorOffset");
+			if (offsetParam != null) offsetParam.value = colorOffsets;
 		}
 
-		setParameterValue(shader.hasTransform, true);
-		setParameterValue(shader.hasColorTransform, colored || hasColorOffsets);
+		var gpuMeta0Param:Dynamic = Reflect.field(shader.data, "gpuMeta0");
+		var gpuMeta1Param:Dynamic = Reflect.field(shader.data, "gpuMeta1");
+		if (gpuMeta0Param != null && gpuMeta0 != null) gpuMeta0Param.value = gpuMeta0;
+		if (gpuMeta1Param != null && gpuMeta1 != null) gpuMeta1Param.value = gpuMeta1;
+
+		var transformParam:Dynamic = shader.hasTransform;
+		if (transformParam == null) transformParam = Reflect.field(shader.data, "hasTransform");
+		if (transformParam != null) setParameterValue(transformParam, true);
+		var colorTransformParam:Dynamic = shader.hasColorTransform;
+		if (colorTransformParam == null) colorTransformParam = Reflect.field(shader.data, "hasColorTransform");
+		if (colorTransformParam != null) setParameterValue(colorTransformParam, colored || hasColorOffsets);
 
 		#if (openfl > "8.7.0")
 		camera.canvas.graphics.overrideBlendMode(blend);
@@ -101,9 +133,22 @@ class FlxDrawTrianglesItem extends FlxDrawBaseItem<FlxDrawTrianglesItem>
 	override public function reset():Void
 	{
 		super.reset();
-		vertices.splice(0, vertices.length);
-		indices.splice(0, indices.length);
-		uvtData.splice(0, uvtData.length);
+		if (borrowedGeometry)
+		{
+			vertices = new DrawData<Float>();
+			indices = new DrawData<Int>();
+			uvtData = new DrawData<Float>();
+			#if !flash
+			alphas = [];
+			#end
+			borrowedGeometry = false;
+		}
+		else
+		{
+			vertices.splice(0, vertices.length);
+			indices.splice(0, indices.length);
+			uvtData.splice(0, uvtData.length);
+		}
 		colors.splice(0, colors.length);
 
 		verticesPosition = 0;
@@ -115,7 +160,34 @@ class FlxDrawTrianglesItem extends FlxDrawBaseItem<FlxDrawTrianglesItem>
 			colorMultipliers.splice(0, colorMultipliers.length);
 		if (colorOffsets != null)
 			colorOffsets.splice(0, colorOffsets.length);
+		if (gpuMeta0 != null)
+			gpuMeta0.splice(0, gpuMeta0.length);
+		if (gpuMeta1 != null)
+			gpuMeta1.splice(0, gpuMeta1.length);
 		#end
+	}
+
+	/**
+	 * Uses immutable caller-owned triangle storage for one render pass.
+	 * Intended for GPU-generated geometry that already owns a persistent mesh.
+	 */
+	public function borrowTriangles(vertices:DrawData<Float>, indices:DrawData<Int>, uvtData:DrawData<Float>, alphaData:Array<Float>,
+		?position:FlxPoint, ?cameraBounds:FlxRect):Bool
+	{
+		if (borrowedGeometry || this.vertices.length != 0 || this.indices.length != 0)
+			return false;
+		this.vertices = vertices;
+		this.indices = indices;
+		this.uvtData = uvtData;
+		#if !flash
+		alphas = alphaData;
+		#end
+		verticesPosition = vertices.length;
+		indicesPosition = indices.length;
+		borrowedGeometry = true;
+		if (position != null) position.putWeak();
+		if (cameraBounds != null) cameraBounds.putWeak();
+		return true;
 	}
 
 	override public function dispose():Void
@@ -131,11 +203,13 @@ class FlxDrawTrianglesItem extends FlxDrawBaseItem<FlxDrawTrianglesItem>
 		alphas = null;
 		colorMultipliers = null;
 		colorOffsets = null;
+		gpuMeta0 = null;
+		gpuMeta1 = null;
 		#end
 	}
 
 	public function addTriangles(vertices:DrawData<Float>, indices:DrawData<Int>, uvtData:DrawData<Float>, ?colors:DrawData<Int>, ?position:FlxPoint,
-			?cameraBounds:FlxRect #if !flash , ?transform:ColorTransform #end):Void
+			?cameraBounds:FlxRect #if !flash , ?transform:ColorTransform, ?gpuMetadata:Array<Float> #end):Void
 	{
 		if (position == null)
 			position = point.set();
@@ -211,7 +285,27 @@ class FlxDrawTrianglesItem extends FlxDrawBaseItem<FlxDrawTrianglesItem>
 		cameraBounds.putWeak();
 
 		#if !flash
-		for (_ in 0...numTriangles)
+		// Only append attributes for triangles accepted by this call. Using the
+		// batch-wide numTriangles here repeated every previous arrow on every add,
+		// causing quadratic CPU work and oversized attribute buffers.
+		final addedTriangles = Std.int((this.indices.length - prevIndicesLength) / 3);
+		if (gpuMetadata != null && gpuMetadata.length >= 8 && addedTriangles > 0)
+		{
+			if (gpuMeta0 == null) gpuMeta0 = [];
+			if (gpuMeta1 == null) gpuMeta1 = [];
+			for (_ in 0...(addedTriangles * 3))
+			{
+				gpuMeta0.push(gpuMetadata[0]);
+				gpuMeta0.push(gpuMetadata[1]);
+				gpuMeta0.push(gpuMetadata[2]);
+				gpuMeta0.push(gpuMetadata[3]);
+				gpuMeta1.push(gpuMetadata[4]);
+				gpuMeta1.push(gpuMetadata[5]);
+				gpuMeta1.push(gpuMetadata[6]);
+				gpuMeta1.push(gpuMetadata[7]);
+			}
+		}
+		for (_ in 0...addedTriangles)
 		{
 			alphas.push(transform != null ? transform.alphaMultiplier : 1.0);
 			alphas.push(transform != null ? transform.alphaMultiplier : 1.0);
@@ -226,7 +320,7 @@ class FlxDrawTrianglesItem extends FlxDrawBaseItem<FlxDrawTrianglesItem>
 			if (colorOffsets == null)
 				colorOffsets = [];
 
-			for (_ in 0...(numTriangles * 3))
+			for (_ in 0...(addedTriangles * 3))
 			{
 				if(transform != null)
 				{

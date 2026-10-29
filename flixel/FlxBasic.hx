@@ -59,7 +59,7 @@ class FlxBasic implements IFlxDestroyable
 	 * set, it uses the list of default draw targets, which is controlled via `FlxG.camera.setDefaultDrawTarget`
 	 * as well as the `DefaultDrawTarget` argument of `FlxG.camera.add`.
 	 */
-	public var cameras(get, set):Array<FlxCamera>;
+	@:isVar public var cameras(get, set):Array<FlxCamera>;
 
 	/**
 	 * Enum that informs the collision system which type of object this is (to avoid expensive type casting).

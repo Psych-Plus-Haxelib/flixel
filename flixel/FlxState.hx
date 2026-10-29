@@ -11,7 +11,7 @@ import flixel.util.typeLimit.NextState;
  * It is for all intents and purpose a fancy `FlxGroup`. And really, it's not even that fancy.
  */
 @:keepSub // workaround for HaxeFoundation/haxe#3749
-#if FLX_NO_UNIT_TEST
+#if (FLX_NO_UNIT_TEST && haxe_ver < 5.0)
 @:autoBuild(flixel.system.macros.FlxMacroUtil.deprecateOverride("switchTo", "switchTo is deprecated, use startOutro"))
 #end
 // show deprecation warning when `switchTo` is overriden in dereived classes
